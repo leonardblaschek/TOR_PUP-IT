@@ -1,0 +1,737 @@
+---
+title: "PUP-IT based TORC Protein Interaction Network"
+author: "Leonard Blaschek"
+output: html_document
+bibliography: refs.bib
+link-citations: true
+---
+
+# *Note*
+
+`2023-11_TOR_PPIN.rmd` and `2023-11_TOR_phospho.rmd` need to be run first.
+
+```{r setup}
+knitr::opts_chunk$set(
+  warning = FALSE, message = FALSE
+)
+
+library(biomartr)
+library(visNetwork)
+library(showtext)
+library(tidyverse)
+
+set.seed(1234)
+options(timeout = 50000)
+
+#### import IBMPlexSans ####
+font_add(
+  "IBMPlexSans",
+  regular = "IBMPlexSans-Light.otf",
+  italic = "IBMPlexSans-LightItalic.otf",
+  bold = "IBMPlexSans-SemiBold.otf",
+  bolditalic = "IBMPlexSans-SemiBoldItalic.otf"
+)
+font_add(
+  "IBMPlexMono",
+  regular = "IBMPlexMono-Regular.otf",
+  italic = "IBMPlexMono-Italic.otf",
+  bold = "IBMPlexMono-SemiBold.otf",
+  bolditalic = "IBMPlexMono-SemiBoldItalic.otf"
+)
+showtext_auto()
+showtext_opts(dpi = 200)
+
+#### proteinrating plot theme ####
+theme_leo <- function(base_size = 8,
+                      base_family = "IBMPlexMono") {
+  theme_minimal(
+    base_size = base_size,
+    base_family = base_family
+  ) %+replace%
+    theme(
+      strip.text = element_text(hjust = 0, face = "italic"),
+      #       axis.ticks = element_line(
+      #         linewidth = 0.25,
+      #         lineend = "square",
+      #         color = "black"
+      #       ),
+      axis.ticks = element_blank(),
+      axis.text.x = element_text(
+        colour = "black", # flipped coords
+        margin = margin(1, 1, 1, 1),
+        size = 8
+      ),
+      axis.text.y = element_text(
+        colour = "black",
+        angle = 0,
+        vjust = 0.5,
+        hjust = 1,
+        margin = margin(1, 1, 1, 1),
+        size = 8
+      ),
+      axis.title = element_text(size = 8),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      # panel.border = element_rect(fill = NA, color = "black", size = 0.25),
+      panel.spacing = unit(1.5, "mm"),
+      legend.position = "bottom",
+      legend.text = element_text(size = rel(0.8)),
+      legend.key.height = unit(4, "mm"),
+      complete = TRUE
+    )
+}
+
+ggtext_size <- 8 / (14 / 5)
+
+pal_ostwald_disc <- c(
+  "#275d95",
+  "#e8c245",
+  "#d25952",
+  "#7ab6c4"
+)
+```
+
+## Set paths and variables
+
+```{r}
+## Set working folder
+out_path <- "data/output/"
+
+## min log2FC to be shown in the figure
+threshold <- 1
+
+## Show interactors of interactors?
+spheres <- 1
+
+## Minimum number of independent baits and/or experiments
+min_overlap <- 5
+
+## Exclude proteins enriched in control treatments?
+filter_ctrl <- TRUE
+filter_GFP <- TRUE
+
+## Limit by GO terms
+GO_filter <- NULL
+# GO_term <- quo(`GO cellular component`)
+# GO_filter <- "cellulose"
+
+## Fix p_sites in output?
+p_sites <- TRUE
+
+## Network center
+POI <- c("Q93YQ1", "Q9LV27", "P20081") # RAPTOR1, LST8-1 and FKBP12
+
+# StringDB cutoff
+e_cut <- 0.25
+```
+
+## Define GO clusters
+
+```{r}
+sugar <- "tricarboxylic acid cycle|pentose-phosphate cycle|sucrose|glycolytic|gluconeogenesis|starch|sugar|glucose|xylose|mannose|fructose"
+phospho <- "phosphorylation|kinase|phosphatase"
+proteolysis <- "proteasome|ubiquitin|proteolysis|proteolytic|peptidase"
+protein_biogenesis <- "chromatin|transcription|ribosom|translation|splicing|folding"
+wall <- "cell wall|cellulose|hemicellulose|xylan|lignin|pectin"
+pumps <- "proton transport|proton export|proton transmembrane transport"
+osmo <- "osmotic|abscisic acid|salt"
+oxi <- "oxidative stress"
+photo <- "photosynth|chlorophyll|photosystem"
+transp <- "protein transport|protein import|protein export|golgi vesicle transport|golgi transport"
+lipid <- "fatty acid|lipid"
+cytoskeleton <- "cytoskeleton"
+```
+
+## Collect STRING DB data
+
+```{r}
+# Arabidopsis
+TOR <- c("Q9FR53", "TOR")
+LST8 <- c("Q9LV27", "LST8-1")
+RAPTOR <- c("Q93YQ1", "RAPTOR1B")
+FKBP12 <- c("P20081", "FKBP12")
+
+TOR_db <- read_tsv(paste0("https://string-db.org/api/tsv/interaction_partners?identifiers=", TOR[1], "&network_type=physical&required_score=50&limit=1000")) |>
+  filter(escore > e_cut) |>
+  mutate(across(c(stringId_A, stringId_B), ~ str_remove(.x, fixed("3702."))))
+
+LST8_db <- read_tsv(paste0("https://string-db.org/api/tsv/interaction_partners?identifiers=", LST8[1], "&network_type=physical&required_score=50&limit=1000")) |>
+  filter(escore > e_cut) |>
+  mutate(across(c(stringId_A, stringId_B), ~ str_remove(.x, fixed("3702."))))
+
+RAPTOR_db <- read_tsv(paste0("https://string-db.org/api/tsv/interaction_partners?identifiers=", RAPTOR[1], "&network_type=physical&required_score=50&limit=1000")) |>
+  filter(escore > e_cut) |>
+  mutate(across(c(stringId_A, stringId_B), ~ str_remove(.x, fixed("3702."))))
+
+string_interactions <- bind_rows(
+  TOR_db, 
+  LST8_db, 
+  RAPTOR_db
+  )
+
+string_interactions_twosided <- string_interactions |>
+  bind_rows(string_interactions |> rename("stringId_A" = "stringId_B", "stringId_B" = "stringId_A")) |>
+  rename(
+    "from" = "stringId_A",
+    "to" = "stringId_B"
+  ) |>
+  distinct(from, to, .keep_all = TRUE)
+
+string_interactors <- c(string_interactions_twosided$from) |> unique()
+```
+
+## Van Leene et al., 2019
+
+```{r}
+leene_data <- read_tsv("data/published/leene_hits.tsv")
+
+leene_loci <- leene_data |> 
+  pull(gene)
+
+stringIds <- read_tsv(
+  paste0("https://string-db.org/api/tsv/get_string_ids?identifiers=", leene_loci, "&species=3702&echo_query=1"),
+  skip_empty_rows = FALSE) |> 
+  mutate(stringId = str_remove(stringId, fixed("3702.")))
+
+leene_data <- leene_data |> 
+  left_join(
+    stringIds,
+    by = join_by("gene" == "queryItem")
+  ) |> 
+  mutate(stringId = case_when(
+    gene == "AT1G53880" ~ "F4HTE0", # manually correct stringIds
+    stringId == "Q9T0J7" ~ "Q8H1F0", # manually correct stringIds
+    TRUE ~ stringId)
+    )
+
+leene_proteins <- leene_data |> 
+  pull(stringId) |> 
+  unique()
+
+leene_edges <- leene_data |> 
+  mutate(
+    bait = str_replace(bait, "LST8", "Q9LV27"),
+    bait = str_replace(bait, "RAPTOR1", "Q93YQ1")
+    ) |> 
+  separate_longer_delim(bait, "/") |> 
+  filter(bait != "TOR") |> 
+  select(
+    "from" = bait, 
+    "to" = stringId,
+    method
+    ) |> 
+  group_by(from, to) |> 
+  summarise(
+    method = paste(unique(method), collapse = "/")
+  )
+
+leene_twosided <- leene_edges |> 
+  bind_rows(leene_edges |> rename("from" = "to", "to" = "from"))
+```
+
+## Create network
+
+```{r}
+## Run all combinations of filters
+overlaps <- c(2:6)
+ctrl <- c(TRUE, FALSE)
+GFP <- c(TRUE, FALSE)
+exclusive <- c(TRUE, FALSE)
+
+combs <- expand.grid(overlaps, ctrl, GFP, exclusive)
+
+combs_list <- split(combs, rownames(combs))
+benchmark_data <- NULL
+
+PPI_files <- "FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE_PUPIT_interactions.tsv"
+ctrl_data <- read_tsv("data/output/control_data.tsv")
+
+for (n in 1:length(PPI_files)) {
+  for (j in 1:length(combs_list)) {
+    # Minimum number of independent baits and/or experiments
+    min_overlap <- combs_list[[j]][[1]]
+
+    ## Exclude proteins enriched in control treatments?
+    filter_ctrl <- combs_list[[j]][[2]]
+    filter_GFP <- combs_list[[j]][[3]]
+    filter_exclusive <- combs_list[[j]][[4]]
+
+    ## Find interactors of query protein
+    database <- read_tsv(paste0(out_path, PPI_files[n]))
+
+    net <- database |>
+      filter(protein %in% POI | bait %in% POI) |>
+      filter(logFC > threshold) |>
+      filter(bait != "GFP") |>
+      # this block limits comparisons to only differ in one of bait, treatment or time point -->
+      separate(group1, into = c("species_1", "construct_1", "bait_1", "treatment_1", "time_1")) |>
+      separate(group2, into = c("species_2", "construct_2", "bait_2", "treatment_2", "time_2")) |>
+      filter(
+        (treatment_1 == treatment_2 & time_1 == time_2) | # compare baits
+          (bait_1 == bait_2 & time_1 == time_2) | # compare treatments
+          (treatment_1 == treatment_2 & bait_1 == bait_2) # compare time points
+        ) |>
+      unite("group1", c(species_1, construct_1, bait_1, treatment_1, time_1), sep = "_") |>
+      unite("group2", c(species_2, construct_2, bait_2, treatment_2, time_2), sep = "_") |>
+      mutate(across(c(group1, group2), ~ str_remove_all(.x, "(_[:digit:])[_$]"))) |>
+      # --|
+      mutate(
+        sphere = 1,
+        # clearly mark the phospho-enriched batch
+        group1 = case_when(batch == "R1067" ~ paste0(group1, "_TiO"),
+                           TRUE ~ group1),
+        group2 = case_when(batch == "R1067" ~ paste0(group2, "_TiO"),
+                           TRUE ~ group2)
+        )
+
+    ctrl_net <- database |>
+      filter(protein %in% POI | bait %in% POI) |>
+      filter(logFC > threshold) |>
+      mutate(sphere = 1) |>
+      separate(group1, into = c("species_1", "construct_1", "bait_1", "treatment_1", "time_1"), remove = FALSE) |>
+      separate(group2, into = c("species_2", "construct_2", "bait_2", "treatment_2", "time_2"), remove = FALSE) |>
+      filter(bait_1 == bait_2 & time_1 == time_2) |>
+      filter(str_detect(treatment_1, "ctrl|man") & !str_detect(treatment_2, "ctrl|man")) |>
+      filter(!(protein %in% POI)) |> #Do not accidentally filter out a bait
+      pull(protein)
+
+    gfp_net <- database |>
+      filter(logFC > threshold) |>
+      mutate(sphere = 1) |>
+      separate(group1, into = c("species_1", "construct_1", "bait_1", "treatment_1", "time_1"), remove = FALSE) |>
+      separate(group2, into = c("species_2", "construct_2", "bait_2", "treatment_2", "time_2"), remove = FALSE) |>
+      filter(treatment_1 == treatment_2 & time_1 == time_2) |>
+      filter(str_detect(bait_1, "GFP") & !str_detect(bait_2, "GFP")) |>
+      filter(!(protein %in% POI)) |> #Do not accidentally filter out a bait
+      pull(protein)
+
+    bait_thresh <- net |>
+      distinct(bait, protein, batch) |>
+      group_by(protein) |>
+      summarise(n = n()) |>
+      filter(n >= min_overlap) |>
+      pull(protein)
+    
+    net <- net |>
+      filter(protein %in% c(bait_thresh, POI))
+
+    if (spheres > 1) {
+      for (i in 1:(spheres - 1)) {
+        net_higher <- database |>
+          filter(logFC > threshold) |>
+          filter(
+            protein %in% (c(net |> pull(protein), net |> pull(bait)) |> unique()) |
+              bait %in% (c(net |> pull(protein), net |> pull(bait)) |> unique())
+          ) |>
+          mutate(sphere = i + 1)
+        net <- net_higher |>
+          anti_join(net, by = c("batch", "group1", "group2", "bait", "control", "protein", "protein")) |>
+          bind_rows(net)
+      }
+    }
+
+    if (filter_ctrl == TRUE) {
+      net <- net |>
+        filter(!(protein %in% ctrl_net))
+    }
+
+    if (filter_GFP == TRUE) {
+      net <- net |>
+        filter(!(protein %in% gfp_net))
+    }
+
+    if (!is.null(GO_filter)) net <- net |> filter(str_detect(!!GO_term, GO_filter))
+
+    if (p_sites == TRUE) {
+      p_net <- read_tsv(paste0(out_path, "phosphoproteomics/FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE_PUPIT_p_sites.tsv")) |>
+        filter(protein %in% POI | bait %in% POI) |>
+        filter(logFC > threshold) |>
+        # this block limits hits to within treatments OR within baits -->
+        separate(group1, into = c("species_1", "construct_1", "bait_1", "treatment_1", "time_1")) |>
+        separate(group2, into = c("species_2", "construct_2", "bait_2", "treatment_2", "time_2")) |>
+        filter(
+        (treatment_1 == treatment_2 & time_1 == time_2) | # compare baits
+          (bait_1 == bait_2 & time_1 == time_2) | # compare treatments
+          (treatment_1 == treatment_2 & bait_1 == bait_2) # compare time points
+        ) |>
+        filter(!str_detect(bait_1, "GFP")) |>
+        unite("group1", c(species_1, construct_1, bait_1, treatment_1, time_1), sep = "_") |>
+        unite("group2", c(species_2, construct_2, bait_2, treatment_2, time_2), sep = "_") |>
+        mutate(across(c(group1, group2), ~ str_remove_all(.x, "(_[:digit:])[_$]"))) |>
+        # --|
+        mutate(
+        sphere = 1,
+        # clearly mark the phospho-enriched batch
+        group1 = case_when(batch == "R1067" ~ paste0(group1, "_TiO"),
+                           TRUE ~ group1),
+        group2 = case_when(batch == "R1067" ~ paste0(group2, "_TiO"),
+                           TRUE ~ group2)
+        )
+
+      net <- net |>
+        bind_rows(select(p_net, -Index))
+    }
+    
+    if (filter_exclusive == TRUE) {
+      net <- net |>
+        filter(!(protein %in% ctrl_data$protein))
+    }
+
+    if (nrow(net) == 0) next
+
+    subfolder <- paste0(out_path, str_remove(PPI_files[n], fixed("_PUPIT_interactions.tsv")))
+    dir.create(file.path(subfolder))
+
+    write_tsv(
+      net,
+      paste0(
+        subfolder, 
+        "/", 
+        paste(POI, collapse = "_"), 
+        "_min-", 
+        min_overlap, 
+        "_ctrl-", 
+        filter_ctrl, 
+        "_GFP-", 
+        filter_GFP, 
+        "_exclusive-", 
+        filter_exclusive, 
+        "_table.tsv"
+        )
+      )
+    
+    export_net <- net |>
+      arrange(group1, group2, desc(logFC)) |>
+      group_by(group1, group2, batch) |>
+      group_split()
+    
+    writexl::write_xlsx(
+      export_net, 
+      paste0(
+        subfolder, 
+        "/", 
+        paste(POI, collapse = "_"), 
+        "_min-", 
+        min_overlap, 
+        "_ctrl-", 
+        filter_ctrl, 
+        "_GFP-", 
+        filter_GFP, 
+        "_exclusive-", 
+        filter_exclusive, 
+        "_table.xlsx"
+        )
+      )
+
+    ## Framework: visNetwork (https://datastorm-open.github.io/visNetwork/)
+    ## Details on highlight: https://stackoverflow.com/questions/64655646/r-display-popup-information-when-mouse-hovers-over-graph-visnetwork
+    
+    ## Plot network for selected protein
+    edges <- net |>
+      drop_na(protein) |>
+      mutate(
+        comp = paste(group1, "vs.", group2),
+        instance = batch,
+        pair = map2(bait, protein, c),
+        pair = map(pair, sort)
+      ) |>
+      filter(!str_detect(pair, "GFP")) |> # exclude GFP interactions from network
+      group_by(pair, instance) |> 
+      mutate(maxlogFC = max(logFC)) |> 
+      group_by(pair) |>
+      summarise(
+        sumlogFC = round(sum(unique(maxlogFC)), 1),
+        comps = paste0("<br>", paste(unique(comp), collapse = ",<br>")),
+        exps = length(unique(instance))
+      ) |>
+      mutate(
+        width = scales::squish(sumlogFC^2, range = c(1, 60)),
+        title = paste0(
+          "Robustness (cum. log<sub>2</sub>FC): ", sumlogFC,
+          "<br>Comparisons: ", comps,
+          "<br>No. of experiments: ", exps
+        )
+      ) |>
+      unnest_wider(pair, names_sep = "_") |>
+      rename(
+        "from" = pair_1,
+        "to" = pair_2
+      )
+
+    annotations <- database |>
+      select(protein, 11:17) |>
+      distinct()
+    
+    nodes <- tibble(id = c(edges |> pull(from), edges |> pull(to)) |> unique()) |>
+      left_join(annotations, by = c("id" = "protein")) |> # merge annotations
+      group_by(id) |>
+      # sort so we preferentially drop duplicates without annotations
+      arrange(desc(Synonyms), .by_group = TRUE) |>
+      # drop duplicated proteins
+      distinct(id, .keep_all = TRUE) |> 
+      # left_join(homologs) |>
+      mutate(
+        label = id,
+        title = case_when(
+          !is.na(gene) & !is.na(Synonyms) & Synonyms != "" ~ paste0(gene, " | ", Synonyms),
+          !is.na(gene) & !is.na(Description) ~ paste0(gene, " | ", Description),
+          !is.na(gene) ~ gene,
+          id == "P20081" ~ "<i>Sc</i>FKBP<br><i>Binds Arabidopsis TOR upon rapamycin recruitment.</i>",
+          TRUE ~ id
+        ),
+        shape = case_when(
+          id %in% c(LST8[1], RAPTOR[1], FKBP12[1]) ~ "hexagon",
+          id %in% p_net$protein ~ "square",
+          TRUE ~ "dot"
+        ),
+        size = case_when(id %in% c(LST8[1], RAPTOR[1], FKBP12[1], TOR[1]) ~ 80,
+                         TRUE ~ 25),
+        color.border = case_when(
+          id %in% string_interactors ~ pal_ostwald_disc[1],
+          id %in% leene_proteins ~ pal_ostwald_disc[4],
+          TRUE ~ pal_ostwald_disc[2]),
+        color.highlight.border = case_when(
+          id %in% string_interactors ~ pal_ostwald_disc[1],
+          id %in% leene_proteins ~ pal_ostwald_disc[4],
+          TRUE ~ pal_ostwald_disc[2]),
+        color.background = case_when(
+          id %in% string_interactors ~ pal_ostwald_disc[1],
+          id %in% leene_proteins ~ pal_ostwald_disc[4],
+          TRUE ~ pal_ostwald_disc[2]),
+        color.highlight.background = case_when(
+          id %in% string_interactors ~ pal_ostwald_disc[1],
+          id %in% leene_proteins ~ pal_ostwald_disc[4],
+          TRUE ~ pal_ostwald_disc[2]),
+        annotation = paste(`GO biological process`, Description),
+        annotation = str_replace_all(annotation, "NA ", ""),
+        annotation = str_replace_all(annotation, "NA$", ""),
+        group = case_when(
+          id %in% c(LST8[1], RAPTOR[1], FKBP12[1]) ~ NA,
+          str_detect(
+            annotation, 
+            regex(sugar, ignore_case = TRUE)) ~ "Sugar metabolism",
+          str_detect(
+            annotation, 
+            regex(phospho, ignore_case = TRUE)) ~ "Phosphorylation",
+          str_detect(
+            annotation, 
+            regex(proteolysis, ignore_case = TRUE)) ~ "Proteolysis",
+          str_detect(
+            annotation, 
+            regex(protein_biogenesis, ignore_case = TRUE)) ~ "Protein biogenesis",
+          str_detect(
+            annotation, 
+            regex(wall, ignore_case = TRUE)) ~ "Cell wall",
+          str_detect(
+            annotation, 
+            regex(cytoskeleton, ignore_case = TRUE)) ~ "Cytoskeleton",
+          str_detect(
+            annotation, 
+            regex(pumps, ignore_case = TRUE)) ~ "Proton pumps",
+          str_detect(
+            annotation, 
+            regex(osmo, ignore_case = TRUE)) ~ "Osmotic response",
+          str_detect(
+            annotation, 
+            regex(oxi, ignore_case = TRUE)) ~ "Oxidative stress",
+          str_detect(
+            annotation, 
+            regex(photo, ignore_case = TRUE)) ~ "Photosynthesis",
+          str_detect(
+            annotation, 
+            regex(transp, ignore_case = TRUE)) ~ "Protein translocation",
+          str_detect(
+            annotation, 
+            regex(lipid, ignore_case = TRUE)) ~ "Lipid metabolism",
+          TRUE ~ "Other"
+        )
+      ) |>
+      arrange(id)
+
+    edges_string <- edges |>
+      left_join(string_interactions_twosided) |>
+      left_join(leene_twosided) |> 
+      mutate(
+        title = case_when(
+          !is.na(escore) ~ paste0(title, "<br>StringDB exp. score: ", escore),
+          TRUE ~ title
+        ),
+        title = case_when(
+          !is.na(method) ~ paste0(title, "<br>Van Leene et al. (2019) by ", method),
+          TRUE ~ title
+        ),
+        color.color = case_when(
+          !(is.na(escore)) ~ alpha(pal_ostwald_disc[1], 0.9),
+          !(is.na(method)) ~ alpha(pal_ostwald_disc[4], 0.9),
+          TRUE ~ alpha(pal_ostwald_disc[2], 0.5)
+        ),
+        color.highlight = case_when(
+          !(is.na(escore)) ~ alpha(pal_ostwald_disc[1], 0.9),
+          !(is.na(method)) ~ alpha(pal_ostwald_disc[4], 0.9),
+          TRUE ~ alpha(pal_ostwald_disc[2], 0.9)
+        )
+      ) |> 
+      filter(from != to) # remove bait self-labeling
+
+    ## Benchmark the filtering strategies
+    processes <- nodes |> 
+      group_by(group) |> 
+      count()
+    benchmark_data <- benchmark_data |>
+      bind_rows(tibble(
+        "strategy" = str_remove(PPI_files[n], fixed("_PUPIT_interactions.tsv")),
+        "min_overlap" = min_overlap,
+        "filter_ctrl" = filter_ctrl,
+        "filter_GFP" = filter_GFP,
+        "filter_exclusive" = filter_exclusive,
+        "total_interactions" = nrow(edges_string),
+        "total_proteins" = nrow(nodes),
+        "stringdb" = sum(
+          nodes$id %in% string_interactors, 
+          na.rm = TRUE
+        ),
+        # "known_interactions" = sum(!is.na(edges_string$escore)),
+        # "mean escore" = mean(edges_string$escore, na.rm = TRUE),
+        "leene" = sum(
+          nodes$id %in% leene_proteins,
+          na.rm = TRUE
+        ),
+        "thylakoid_proteins" = sum(
+          str_detect(nodes$`GO cellular component`, "thylakoid") & !str_detect(nodes$`GO cellular component`, "cytosol|cytoplasm"),
+          na.rm = TRUE
+        )
+      ) |>
+        mutate(TP_FP_ratio = (sum(nodes$id %in% c(leene_proteins,string_interactors), na.rm = TRUE)) / thylakoid_proteins)) |>
+      distinct() |>
+      arrange(min_overlap, filter_GFP, filter_ctrl)
+
+    ## Plot Network
+
+    legend_edges <- data.frame(
+      color = c(pal_ostwald_disc[2], pal_ostwald_disc[1], pal_ostwald_disc[4]),
+      label = c("New interaction", "StringDB", "Van Leene et al., 2019"),
+      arrows = "none",
+      font.face = "IBM Plex Mono",
+      font.color = c("black", "white", "black"),
+      font.strokeWidth = 0,
+      width = 20
+    )
+    
+    legend_nodes <- data.frame(
+      label = c("Bait", "Interactor", "Phosphotarget"),
+      shape = c("hexagon", "dot", "square"), 
+      color = "black",
+      font.face = "IBM Plex Mono",
+      font.strokeWidth = 0
+    )
+
+    visNetwork(
+      nodes,
+      edges_string,
+      height = 900,
+      width = "100%",
+      main = list(
+        text = paste0(
+          "<p style='font-size:24px; '><b>PUP-IT based PPI network of<br>",
+          "the Arabidopsis TOR complex.</b></p><br><br>",
+          "Interactors were found in at least <b>", min_overlap, "</b> independent repeats and/or baits.<br>",
+          "Phosphotargets are from a single experiment.<br>",
+          "Filtering of GFP interactors: ", filter_GFP, ".<br>",
+          "Filtering of low-sucrose interactors: ", filter_ctrl, ".<br>",
+          "Filtering of promiscuous interactors: ", filter_exclusive, "."
+        ),
+        style = "font-family:IBM Plex Mono"
+      ),
+      footer = list(
+        text = paste0(
+          "Node colour identifies previously reported interactors of the Arabidopsis TOR complex.<br>",
+          "Edge colour identifies previously reported interactions specifically between the linked proteins."
+        ),
+        style = "font-family:IBM Plex Mono"
+      ),
+    ) |>
+      visNodes(
+        borderWidth = 3,
+        shadow = list(
+          enabled = TRUE, 
+          size = 10
+        ),
+        font = list(
+          face = "IBM Plex Mono"
+        )
+      ) |>
+      # visEdges() |> 
+      visOptions(
+        highlightNearest = list(
+          enabled = T, 
+          hover = F,
+          degree = list(from = 1, to = 1),
+          labelOnly = F,
+          algorithm = "hierarchical"
+          ),
+        selectedBy = list(
+          variable = "group",
+          main = "Select all",
+          selected = "Sugar metabolism",
+          style = "font-family:IBM Plex Mono",
+          highlight = T
+        ),
+
+      ) |>
+      visInteraction(
+        dragNodes = T,
+        hover = F,
+        hoverConnectedEdges = F,
+        selectConnectedEdges = T,
+        tooltipStyle = 
+          "position: fixed; 
+          visibility:hidden; 
+          font-family:IBM Plex Mono; 
+          background-color:#FFFFFF; 
+          border: 2px solid black;
+          border-radius: 5px;"
+        ) |>
+      visPhysics(
+        stabilization = FALSE,
+        maxVelocity = 50,
+        minVelocity = 0.2,
+        # solver = "barnesHut",
+        # barnesHut = list(gravitationalConstant = -10000),
+        solver = "forceAtlas2Based",
+        forceAtlas2Based = list(gravitationalConstant = -100),
+        timestep = 0.2
+      ) |>
+      visLegend(
+        addEdges = legend_edges,
+        addNodes = legend_nodes,
+        useGroups = FALSE,
+      ) |>
+      visSave(file = paste0(
+        subfolder, 
+        "/", 
+        paste(POI, collapse = "_"), 
+        "_min-", 
+        min_overlap, 
+        "_ctrl-", 
+        filter_ctrl, 
+        "_GFP-", 
+        filter_GFP, 
+        "_exclusive-",
+        filter_exclusive,
+        "_network.html"))
+  }
+}
+writexl::write_xlsx(benchmark_data, paste0(out_path, "filtering_benchmark.xlsx"))
+
+# system("cp data/output/FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE/Q93YQ1_Q9LV27_P20081_min-2_ctrl-FALSE_GFP-FALSE_exclusive-FALSE_network.html data/figures/TOR_widest.html")
+
+# system("cp data/output/FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE/Q93YQ1_Q9LV27_P20081_min-3_ctrl-FALSE_GFP-TRUE_exclusive-FALSE_network.html data/figures/TOR_wider.html")
+
+# system("cp data/output/FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE/Q93YQ1_Q9LV27_P20081_min-5_ctrl-FALSE_GFP-TRUE_exclusive-FALSE_network.html data/figures/TOR_core.html")
+
+# system("cp data/output/FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE/Q93YQ1_Q9LV27_P20081_min-2_ctrl-FALSE_GFP-FALSE_exclusive-TRUE_network.html data/figures/TOR_widest_exclusive.html")
+
+# system("cp data/output/FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE/Q93YQ1_Q9LV27_P20081_min-3_ctrl-FALSE_GFP-TRUE_exclusive-TRUE_network.html data/figures/TOR_wider_exclusive.html")
+
+# system("cp data/output/FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE/Q93YQ1_Q9LV27_P20081_min-5_ctrl-FALSE_GFP-TRUE_exclusive-TRUE_network.html data/figures/TOR_core_exclusive.html")
+```

@@ -1,0 +1,814 @@
+---
+title: "PUP-IT based identification of putative TORC kinase subtrates"
+author: "Leonard Blaschek"
+output: html_document
+bibliography: refs.bib
+link-citations: true
+---
+
+```{r setup}
+knitr::opts_chunk$set(
+  warning = FALSE, message = FALSE
+)
+
+library(biomartr)
+library(limma)
+library(metablastr)
+library(MsCoreUtils)
+library(msqrob2)
+library(patchwork)
+library(QFeatures)
+library(seqinr)
+library(showtext)
+library(tidyverse)
+
+options(timeout = 50000)
+set.seed(1234)
+
+#### import IBMPlexSans ####
+font_add(
+  "IBMPlexSans",
+  regular = "IBMPlexSans-Light.otf",
+  italic = "IBMPlexSans-LightItalic.otf",
+  bold = "IBMPlexSans-SemiBold.otf",
+  bolditalic = "IBMPlexSans-SemiBoldItalic.otf"
+)
+font_add(
+  "IBMPlexMono",
+  regular = "IBMPlexMono-Regular.otf",
+  italic = "IBMPlexMono-Italic.otf",
+  bold = "IBMPlexMono-SemiBold.otf",
+  bolditalic = "IBMPlexMono-SemiBoldItalic.otf"
+)
+font_add(
+  "Futura",
+  regular = "FuturaStd-Medium.otf",
+  italic = "FuturaStd-MediumOblique.otf",
+  bold = "FuturaStd-Bold.otf",
+  bolditalic = "FuturaStd-BoldOblique.otf"
+)
+showtext_auto()
+showtext_opts(dpi = 200)
+
+text_size <- 6
+ggtext_size <- text_size / (14 / 5)
+
+#### generating plot theme ####
+theme_leo <- function(base_size = text_size,
+                      base_family = "Futura") {
+  theme_minimal(
+    base_size = base_size,
+    base_family = base_family
+  ) %+replace%
+    theme(
+      strip.text = element_text(hjust = 0, face = "italic"),
+      axis.ticks = element_blank(),
+      axis.text.x = element_text(
+        colour = "black",
+        margin = margin(1, 1, 1, 1),
+        size = text_size
+      ),
+      axis.text.y = element_text(
+        colour = "black",
+        angle = 0,
+        vjust = 0.5,
+        hjust = 1,
+        margin = margin(1, 1, 1, 1),
+        size = text_size
+      ),
+      axis.title = element_blank(),
+      plot.title = element_text(size = text_size, hjust = 0),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.spacing = unit(1.5, "mm"),
+      legend.position = "bottom",
+      legend.text = element_text(size = rel(0.8)),
+      legend.key.height = unit(4, "mm"),
+      complete = TRUE
+    )
+}
+
+pal_ostwald_disc <- c(
+  "#275d95",
+  "#e8c245",
+  "#d25952"
+)
+```
+
+## Set paths and variables
+
+```{r}
+## Set working folder
+data_path <- "data/phosphoproteomics/"
+out_path <- "data/output/phosphoproteomics/"
+
+# Input data
+# input <- "MQ" # MaxQuant
+input <- "FP" #FragPipe
+
+# TODO: Use maxLFQ values? If `FALSE`, raw intensities are used
+maxLFQ <- TRUE
+
+# Use a hurdle model instead of imputing missing values?
+# !! The hurdle model is not implemented here !!
+hurdle <- FALSE
+
+# Impute MNAR values from a distribution centered at the batch-wide detection limit?
+# If `FALSE`, MinProb imputation from the sample-wide detection limit will be used
+global_MinProb <- TRUE
+
+## Helper functions/variables adapting to FP/MQ output
+intensity_cols <- case_when(
+  input == "FP" & maxLFQ == FALSE ~ c(" Intensity", "LFQ"),
+  input == "FP" & maxLFQ == TRUE ~ c(" MaxLFQ Intensity", "PLACEHOLDER"), #"PLACEHOLDER" keeps a filtering step from failing due to NA
+  input == "MQ" & maxLFQ == FALSE ~ c("Intensity ", "LFQ"),
+  input == "MQ" & maxLFQ == TRUE ~ c("LFQ intensity ", "PLACEHOLDER"),
+)
+
+int_selector <- if (input == "FP") {
+  quo(ends_with(intensity_cols[1]))
+} else {
+  quo(starts_with(intensity_cols[1]))
+}
+
+int_paster <- if (input == "FP") {
+  quo(paste0(sample, (intensity_cols[1])))
+} else {
+  quo(paste0(intensity_cols[1], sample))
+}
+
+protein_name <- if (input == "FP") {
+  quo(Protein)
+} else {
+  quo(`Leading razor protein`)
+}
+
+protein_name_dot <- if (input == "FP") {
+  quo(Protein)
+} else {
+  quo(Leading.razor.protein)
+}
+
+seq_name <- if (input == "FP") {
+  quo(Index)
+} else {
+  quo(Sequence)
+}
+```
+
+## List data and metadata files
+
+```{r}
+suffix <- ifelse(input == "MQ", "*_peptides.txt", "*.tsv")
+pep_path <- paste0(data_path, input)
+
+data_files <-
+  list.files(
+    path = pep_path,
+    pattern = suffix,
+    recursive = FALSE,
+    full.names = TRUE
+  )
+
+if (input == "MQ") {
+  meta_files <-
+    list.files(
+      path = pep_path,
+      pattern = "*_meta.tsv",
+      recursive = FALSE,
+      full.names = TRUE
+    )
+}
+```
+
+## Impute missing values
+
+```{r}
+## Loading function
+read_data <- function(flnm) {
+  read_tsv(flnm) |> 
+    mutate(batch = str_remove(
+      basename(flnm),
+      fixed(str_remove(suffix, fixed("*")))
+    )) %>%
+    # base pipe does not support curly brackets
+    # filter out contaminants and decoys
+    {
+      if (input == "FP") {
+        filter(., str_detect(!!protein_name, "ARATH|FLAG-PUP|PafA|GFP|NbE|NbD|RAPTOR|LST8"))
+      } else {
+        filter(., !str_detect(!!protein_name, "REV_|CON_"))
+      }
+    } |>
+    select(
+      quo_name(seq_name),
+      batch,
+      !!int_selector & !contains(intensity_cols[2])
+    ) |>
+    ## Tidy data frame to one row per value
+    pivot_longer(!!int_selector,
+      names_to = "ID",
+      values_to = "Intensity"
+    ) |>
+    mutate(ID = str_remove(ID, intensity_cols[1])) %>% # base pipe does not support curly brackets
+    {
+      if (input == "MQ") {
+        left_join(., map_dfr(meta_files, read_tsv)) |> mutate(ID = sample)
+      } else {
+        .
+      }
+    } |>
+    ## Clean column names and replace missing values (0 in the input) with NA
+    mutate(
+      sample = ID,
+      group = str_remove(sample, "_[:digit:]$"),
+      Intensity = case_when(
+        Intensity == 0 ~ NA_real_,
+        TRUE ~ Intensity
+      )
+    )
+}
+## Load data
+data <- map_dfr(data_files, read_data)
+
+## Compare numbers of detected peptides
+n_pep <- data |>
+  group_by(batch) |>
+  select(quo_name(seq_name)) |>
+  distinct() |>
+  tally()
+
+n_plot <- ggplot(
+  n_pep,
+  aes(
+    x = batch,
+    y = n
+  )
+) +
+  geom_col(
+    width = 0.05,
+    fill = "black"
+  ) +
+  geom_point(
+    aes(fill = n),
+    shape = 21,
+    size = 3
+  ) +
+  scale_fill_distiller(palette = "RdYlBu", direction = 1) +
+  # scale_y_continuous(
+  #   breaks = scales::breaks_width(10),
+  #   labels = scales::label_number(suffix = "K")
+  # ) +
+  labs(
+    title = "Identified peptides",
+    y = NULL
+  ) +
+  coord_flip() +
+  theme_leo() +
+  theme(legend.position = "none")
+
+raw_plot <- ggplot(data, aes(x = Intensity, group = sample, colour = batch)) +
+  geom_density(
+    linewidth = 0.2,
+    alpha = 0.5,
+    adjust = 0.2
+  ) +
+  theme_leo() +
+  labs(title = "Raw peptide intensities") +
+  theme(legend.position = "bottom")
+
+## Log2 transform
+data <- data |>
+  mutate(Intensity = log2(Intensity))
+
+n <- data |>
+  group_by(sample, batch) |>
+  summarise(n = n()) |>
+  ungroup() |>
+  select(batch, n) |>
+  distinct()
+
+log2_plot <- ggplot(data, aes(x = Intensity, group = sample, colour = batch)) +
+  geom_density(
+    linewidth = 0.2,
+    alpha = 0.5
+  ) +
+  theme_leo() +
+  labs(title = "Log2 transformed peptide intensities") +
+  theme(legend.position = "bottom")
+
+## Median center
+data <- data |>
+  group_by(sample) |>
+  mutate(
+    median = median(Intensity, na.rm = TRUE),
+    Intensity = Intensity - median
+  )
+
+center_plot <- ggplot(data, aes(x = Intensity, group = sample, colour = batch)) +
+  geom_density(
+    linewidth = 0.2,
+    alpha = 0.5
+  ) +
+  theme_leo() +
+  labs(title = "Median-centred peptide intensities") +
+  theme(legend.position = "none")
+
+## Within technical replicates, categorise <60% missing values as missing-at-random (MAR)
+## and >60% missing values as missing-not-at-random (MNAR)
+missing_defined <- data |>
+  group_by(!!seq_name, group, batch) |>
+  summarise(
+    n = n(),
+    missing_Intensity = sum(is.na(Intensity))
+  ) |>
+  mutate(missing_type = case_when(
+    missing_Intensity == 0 ~ NA_character_,
+    missing_Intensity > (n * 0.6) ~ "MNAR",
+    TRUE ~ "MAR"
+  ))
+
+missing_across <- missing_defined |>
+  group_by(!!seq_name, batch) |>
+  summarise(
+    missing_across = sum(missing_Intensity),
+    n_across = sum(n)
+  )
+
+## Merge categories with main data frame
+data <- data |>
+  left_join(missing_defined) |>
+  left_join(missing_across)
+
+## Inspect missing values
+missingness <- data |>
+  group_by(!!seq_name, batch) |>
+  distinct(!!seq_name, batch, .keep_all = TRUE) |>
+  summarise(
+    missing_bin = ordered(
+      case_when(
+        missing_across / n_across < 0.2 ~ "< 0.2",
+        missing_across / n_across < 0.6 ~ "< 0.6",
+        TRUE ~ "≥ 0.6"
+      ),
+      levels = c("< 0.2", "< 0.6", "≥ 0.6")
+    ),
+    median = median(Intensity, na.rm = TRUE)
+  )
+
+missing_plot <- ggplot(missingness, aes(x = median, fill = missing_bin)) +
+  geom_histogram(position = "identity", alpha = 0.8) +
+  scale_fill_manual(values = c(pal_ostwald_disc, "grey"), name = "Proportion missing across all samples") +
+  theme_leo() +
+  labs(title = "Distribution of missing values") +
+  facet_wrap(~batch)
+
+
+raw_plot + log2_plot + center_plot + n_plot + missing_plot +
+  plot_layout(design = "
+              ABC
+              DEE
+              ")
+
+if (hurdle == FALSE) {
+  ## Filter peptides that are detected only once
+  before_filt <- data |>
+    group_by(batch) |>
+    distinct(!!seq_name)
+  data <- data #|>
+    # group_by(!!seq_name, batch) |>
+    # filter(missing_across < (n_across - 1))
+  after_filt <- data |>
+    group_by(batch) |>
+    distinct(!!seq_name)
+
+  n_filtered <- nrow(before_filt) - nrow(after_filt)
+  cat(paste0(n_filtered, " peptides were detected only once and filtered out."))
+
+  filter_plot <- ggplot(data, aes(x = Intensity, group = sample, colour = batch)) +
+    geom_density(
+      linewidth = 0.2,
+      alpha = 0.5
+    ) +
+    theme_leo() +
+    labs(title = paste("After filtering out", n_filtered, "peptides")) +
+    theme(legend.position = "bottom")
+
+  ## Select only MAR data
+  mar_data <- data |>
+    filter(missing_type == "MAR")
+
+  ## Fill MAR data with 95% of the observed minimum (PRI-like: mean) value in the respective group
+  mar_out <- mar_data |>
+    group_by(!!seq_name, group, batch) |>
+    mutate(Intensity = case_when(
+      is.na(Intensity) ~
+        (min(Intensity, na.rm = TRUE) - (abs(min(Intensity, na.rm = TRUE)) * 0.05)), # conservative
+      #     (mean(Intensity, na.rm = TRUE) - (abs(mean(Intensity, na.rm = TRUE)) * 0.05)), # PRI-like
+      TRUE ~ Intensity
+    ))
+
+  ## Combine filled MAR values with still missing MNAR values
+  mnar_wide <- data |>
+    filter(missing_type == "MNAR" | is.na(missing_type)) |>
+    full_join(mar_out)
+
+  if (global_MinProb == FALSE) {
+    ## Transform dataframe to one matrix per batch
+    mnar_mat <- mnar_wide |>
+      select(!!seq_name, batch, sample, Intensity) |>
+      mutate(sample = !!int_paster) |>
+      group_by(batch) |>
+      nest(data = c(!!seq_name, sample, Intensity)) |>
+      mutate(data = map(data, ~ .x |>
+        pivot_wider(
+          id_cols = quo_name(seq_name),
+          names_from = sample,
+          values_from = Intensity
+        ))) |>
+      mutate(data = map(data, ~ .x |>
+        select(!!seq_name, order(colnames(.x))))) |>
+      mutate(data = map(data, ~ .x |>
+        column_to_rownames(quo_name(seq_name)) |>
+        as.matrix()))
+
+    ## Fill MNAR values by minimum imputation within each sample
+    mnar_filled <- mnar_mat |>
+      mutate(data = map(data, ~ impute_MinProb(.x, sigma = 0.05, MARGIN = 2L)))
+
+    ## Transform matrix back into a dataframe and add metadata for diagnostics
+    meta <- data |>
+      ungroup() |>
+      select(sample, batch, group) |>
+      distinct()
+
+    data_filled <- mnar_filled |>
+      mutate(data = map(data, ~ as_tibble(.x, rownames = quo_name(seq_name)))) |>
+      mutate(data = map(data, ~ pivot_longer(.x, !!int_selector,
+        names_to = "sample",
+        values_to = "Intensity"
+      ))) |>
+      unnest(data) |>
+      mutate(sample = str_remove(sample, fixed(" Intensity")))
+
+    ## Transform matrix into wide dataframe for downstream analysis
+    peptides_filled <- mnar_filled |>
+      mutate(filled_data = map(data, ~ as_tibble(.x, rownames = quo_name(seq_name)))) |>
+      select(-data)
+  }
+
+  if (global_MinProb == TRUE) {
+    gMinProb <- function(x, min) {
+      modify_if(x, is.na, ~ rnorm(n = 1, mean = min, sd = 0.05))
+    }
+    ## Fill MNAR values by minimum imputation within each batch
+    data_filled <- mnar_wide |>
+      group_by(sample) |>
+      # detection threshold per sample
+      # mutate(min = min(Intensity, na.rm = TRUE)) |> # actual minimum
+      mutate(min = quantile(Intensity, probs = 0.005, na.rm = TRUE)) |> # 0.5% quantile
+      group_by(batch) |>
+      # average detection threshold per run
+      mutate(min = mean(min)) |>
+      mutate(Intensity = gMinProb(Intensity, min))
+
+    peptides_filled <- data_filled |>
+      select(!!seq_name, batch, sample, Intensity) |>
+      mutate(sample = !!int_paster) |>
+      group_by(batch) |>
+      nest(filled_data = c(!!seq_name, sample, Intensity)) |>
+      mutate(filled_data = map(filled_data, ~ .x |>
+        pivot_wider(
+          id_cols = quo_name(seq_name),
+          names_from = sample,
+          values_from = Intensity
+        ))) |>
+      mutate(filled_data = map(filled_data, ~ .x |>
+        select(!!seq_name, order(colnames(.x)))))
+  }
+
+  filled_plot <- ggplot(data_filled, aes(x = Intensity, group = sample, colour = batch)) +
+    geom_density(
+      linewidth = 0.2,
+      alpha = 0.5
+    ) +
+    theme_leo() +
+    labs(title = "Peptide intensities after imputation") +
+    theme(legend.position = "none")
+
+
+  ## Merge input files with filled values
+  read_peptides <- function(flnm) {
+    read_tsv(flnm) |> 
+      mutate(batch = str_remove(
+      basename(flnm),
+      fixed(str_remove(suffix, fixed("*")))
+    )) %>%
+      # base pipe does not support curly brackets
+      # filter out contaminants and decoys
+      {
+        if (input == "FP") {
+          filter(., str_detect(!!protein_name, "ARATH|FLAG-PUP|PafA|GFP|NbE|NbD|RAPTOR|LST8"))
+        } else {
+          filter(., !str_detect(!!protein_name, "REV_|CON_"))
+        }
+      } |>
+      group_by(batch) |>
+      nest()
+  }
+  raw_data <- map_dfr(data_files, read_peptides)
+
+  ## Output filled .tsv files
+  filled_input <- raw_data |>
+    right_join(peptides_filled, by = "batch") |>
+    mutate(data = map(data, \(x) select(x, -!!int_selector))) |>
+    mutate(filled_data = map2(data, filled_data, \(x, y) right_join(x, y, by = quo_name(seq_name)))) |>
+    mutate(filled_data = map(filled_data, \(x) mutate(x, !!protein_name := case_when(str_detect(!!protein_name, "GFP_AEQVI") ~ "GFP", TRUE ~ !!protein_name)))) |>
+    mutate(filled_data = walk(filled_data, \(x) write_tsv(x, paste0(out_path, batch, "_", input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_filled.tsv"))))
+
+  raw_plot + log2_plot + center_plot + n_plot + missing_plot + filter_plot + filled_plot +
+    plot_layout(design = "
+              AABBCC
+              DDEEEE
+              FFFGGG")
+}
+```
+
+
+## Differential enrichment of phosphosites
+
+```{r}
+
+if (hurdle == FALSE) {
+  ## Load self aggregated data
+  filled_files <-
+    list.files(
+      path = out_path,
+      pattern = paste0("*", input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_filled.tsv"),
+      recursive = FALSE,
+      full.names = TRUE
+    )
+  
+  FC <- tibble()
+  intensities <- tibble()
+
+  for (i in 1:length(filled_files)) {
+    pep_df <- read_tsv(filled_files[i])
+    
+    ecols <- which(
+      names(pep_df) %in%
+        names(pep_df |>
+          select(!!int_selector))
+    )
+
+    pe <- readQFeatures(
+      pep_df,
+      ecol = ecols,
+      fnames = 1,
+      name = "Index", sep = "\t"
+    )
+
+    # Load metadata
+    colData(pe)$group <- colnames(pe)[[1]] |>
+      str_remove(str_replace_all(intensity_cols[1], " ", fixed("."))) |>
+      str_remove("_[:digit:]$")
+
+    plotMDS(assay(pe[["Index"]]), main = "Site level")
+    
+    ## Set aside site intensities
+    protein_int <- as_tibble(assay(pe[["Index"]]), rownames = "Index") |> 
+    pivot_longer(
+      -Index, 
+      names_to = "group",
+      values_to = "intensity") |> 
+    mutate(
+      group = str_remove(group, "\\..+"),
+      batch = str_extract(basename(data_files[i]), "(R[:digit:]{4})\\.tsv", group = 1)
+    ) |> 
+    separate_wider_delim(
+      group, 
+      delim = "_", 
+      names = c("species", "construct", "bait", "treatment", "time", "replicate")
+      )
+    
+    intensities <- bind_rows(intensities, protein_int)
+
+    ## Estimate site levels
+    pe <- msqrob(
+      object = pe,
+      i = "Index",
+      formula = ~group,
+      overwrite = TRUE,
+      maxitRob = 1000
+    )
+
+    ## Compare groups
+    coefs <- names(getCoef(rowData(pe[["Index"]])$msqrobModels[[1]]))[-1]
+    coef_comb_data <- expand.grid(coefs, coefs) |>
+      filter(Var1 != Var2)
+
+    indx <- !duplicated(t(apply(coef_comb_data, 1, sort)))
+
+    coef_comb <- coef_comb_data[indx, ] |>
+      unite(contrast, Var1, Var2, sep = " - ") |>
+      pull(var = contrast, name = NULL)
+
+    contrast_names <- c(coefs, coef_comb)
+    contrast_list <- paste0(c(coefs, coef_comb), "=0")
+
+    contrasts <- makeContrast(
+      contrast_list,
+      parameterNames = coefs
+    )
+
+    pe <- hypothesisTest(object = pe, i = "Index", contrast = contrasts, overwrite = TRUE)
+
+    for (k in 1:length(contrast_names)) {
+      ex <- as_tibble(rowData(pe[["Index"]])[[contrast_names[k]]], rownames = "Index") |>
+        mutate(
+          contrast = str_remove_all(contrast_names[k], "group"),
+          batch = str_remove(basename(data_files[i]), fixed(".tsv"))
+        ) |>
+        separate(contrast, into = c("group1", "group2"), sep = " - ", fill = "right") |>
+        mutate(group2 = case_when(
+          is.na(group2) ~ unique(sort(colData(pe)$group))[1],
+          TRUE ~ group2
+        ))
+
+      FC <- FC |>
+        bind_rows(ex)
+    }
+  }
+  
+  ## Export data
+  
+  # Export site intensity data
+  write_tsv(
+    intensities, 
+    paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_site_intensities.tsv")
+    )
+  
+  # Export differential enrichment
+  write_tsv(
+    FC, 
+    paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_site_FC.tsv")
+    )
+  
+  xlsx_export <- FC |>
+    arrange(group1, group2, desc(logFC)) |>
+    group_by(group1, group2, batch) |>
+    group_split()
+  writexl::write_xlsx(
+    xlsx_export, 
+    paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_site_FC.xlsx")
+    )
+}
+```
+
+## Add annotations for At experiments
+
+```{r}
+FC <- read_tsv(paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_site_FC.tsv")) |> 
+  mutate(protein = str_extract(Index, "^([:alnum:]+)_.+$", group = 1))
+
+hits <- FC$protein
+
+FC <- FC |> 
+  mutate(uniprot = hits) |> 
+  mutate(uniprot = case_when(is.na(uniprot) ~ protein,
+                             TRUE ~ uniprot))
+## Remove duplpicates
+unique_hits <- unique(hits)[!is.na(unique(hits))]
+## Split to avoid time-outs
+hits_split <- split(unique_hits, ceiling(seq_along(unique_hits) / 1000)) 
+
+## Fetch annotations for blast hits
+result_1 <- tibble()
+result_2 <- tibble()
+for (i in 1:length(hits_split)) {
+  result_1 <- result_1 |>
+    bind_rows(
+      biomart(
+        genes = hits_split[[i]], # query genes
+        mart = "plants_mart", # subject biomart
+        dataset = "athaliana_eg_gene", # subject dataset
+        attributes = c(
+          "ensembl_transcript_id", "description", "external_synonym", "namespace_1003", "name_1006", "interpro_description"
+        ), # subject attributes
+        filters = "uniprotswissprot" # ID type of the query
+      )
+    )
+
+  result_2 <- result_2 |>
+    bind_rows(biomart(
+      genes = hits_split[[i]], # query genes
+      mart = "plants_mart", # subject biomart
+      dataset = "athaliana_eg_gene", # subject dataset
+      attributes = c(
+        "ensembl_transcript_id", "description", "external_synonym", "namespace_1003", "name_1006", "interpro_description"
+      ), # subject attributes
+      filters = "uniprotsptrembl" # ID type of the query
+    ))
+}
+
+# Collapse data frame to one row per protein
+results_list_1 <- result_1 |>
+  mutate(gene = str_remove_all(ensembl_transcript_id, "\\..+")) |>
+  group_by(gene, external_synonym, description, interpro_description) |>
+  filter(namespace_1003 != "") |>
+  pivot_wider(names_from = namespace_1003, values_from = name_1006, values_fn = ~ paste(sort(unique(.x)), collapse = "; ")) |>
+  group_by(gene) |>
+  summarise(
+    Protein = unique(uniprotswissprot),
+    Synonyms = paste(unique(external_synonym), collapse = ";<br>"),
+    `GO cellular component` = paste(unique(cellular_component), collapse = "; "),
+    `GO biological process` = paste(unique(biological_process), collapse = "; "),
+    `GO molecular function` = paste(unique(molecular_function), collapse = "; "),
+    Description = unique(description),
+    `Interpro terms` = paste(
+      unique(interpro_description),
+      collapse = "; "
+    )
+  )
+
+results_list_2 <- result_2 |>
+  mutate(gene = str_remove_all(ensembl_transcript_id, "\\..+")) |>
+  group_by(gene, external_synonym, description, interpro_description) |>
+  filter(namespace_1003 != "") |>
+  pivot_wider(names_from = namespace_1003, values_from = name_1006, values_fn = ~ paste(sort(unique(.x)), collapse = "; ")) |>
+  group_by(gene) |>
+  summarise(
+    Protein = unique(uniprotsptrembl),
+    Synonyms = paste(unique(external_synonym), collapse = "<br>"),
+    `GO cellular component` = paste(unique(cellular_component), collapse = "; "),
+    `GO biological process` = paste(unique(biological_process), collapse = "; "),
+    `GO molecular function` = paste(unique(molecular_function), collapse = "; "),
+    Description = unique(description),
+    `Interpro terms` = paste(
+      unique(interpro_description),
+      collapse = "; "
+    )
+  )
+
+results_list <- full_join(results_list_1, results_list_2)
+
+complete <- FC |>
+  left_join(results_list, by = join_by(uniprot == Protein)) |> 
+  select(-protein) |> 
+  select("protein" = "uniprot", everything())
+
+leene_p_sites <- read_tsv("data/published/leene_p_sites.tsv") |> 
+  mutate(gene = str_extract(Protein, "^[:alnum:]+"))
+
+complete <- complete |> 
+  left_join(leene_p_sites, by = join_by(gene))
+
+write_tsv(complete, paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_site_FC_annotated.tsv"))
+
+xlsx_export <- complete |>
+  arrange(group1, group2, desc(logFC)) |>
+  group_by(group1, group2) |>
+  group_split()
+writexl::write_xlsx(xlsx_export, paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_site_FC_annotated.xlsx"))
+```
+
+
+## Filter PPI database and save
+
+```{r}
+FC <- read_tsv(paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_site_FC_annotated.tsv"))
+FC_sig <- FC |>
+  filter(adjPval < 0.05)
+
+FC_inv <- FC |>
+  mutate(logFC = -logFC) |>
+  rename(
+    "group2" = "group1",
+    "group1" = "group2"
+  ) |> 
+  filter(adjPval < 0.05)
+
+
+database <- FC_sig |>
+  bind_rows(FC_inv) |>
+  filter(logFC >= 1) |>
+  mutate(bait = case_when(
+    str_detect(group1, "GFP") ~ "GFP",
+    str_detect(group1, "RAPTOR") ~ "Q93YQ1", # Q93YQ1|AT3G08850
+    str_detect(group1, "LST8") ~ "Q9LV27", # Q9LV27|AT3G18140
+    str_detect(group1, "FKBP12") ~ "Q8LGG0", # Q8LGG0|AT5G64350
+  )) |>
+  mutate(control = case_when(
+    str_detect(group2, "GFP") ~ "GFP",
+    str_detect(group2, "RAPTOR") ~ "Q93YQ1",
+    str_detect(group2, "LST8") ~ "Q9LV27",
+    str_detect(group2, "FKBP12") ~ "Q8LGG0",
+  ))
+
+write_tsv(database, paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_PUPIT_p_sites.tsv"))
+xlsx_export <- database |>
+  arrange(group1, group2, desc(logFC)) |>
+  group_by(group1, group2, batch) |>
+  group_split()
+writexl::write_xlsx(xlsx_export, paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_PUPIT_p_sites.xlsx"))
+```
