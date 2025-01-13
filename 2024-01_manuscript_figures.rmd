@@ -5920,18 +5920,46 @@ known <- c(
   unique()
 
 SP_proteins <- sig_sites |> 
-  filter(str_detect(window, "\\]P")) |> 
+  filter(str_detect(window, "S\\[.+\\][P|E]")) |> 
   mutate("evidence" = case_when(
     protein %in% known ~ "Known",
     .default = NA_character_
-  ))
+  )) |> 
+  mutate(
+    Position = str_extract(Index, "_S([:digit:]+)", group = 1),
+    Description = str_remove(Description, " \\[.+"),
+    type = "SP"
+    ) |> 
+  select(
+    "Gene" = gene,
+    "Protein" = protein,
+    Position,
+    Description,
+    "Window" = "window",
+    type
+    )
 
 Rxxs_proteins <- sig_sites |> 
   filter(str_detect(window, "R..S\\[")) |> 
   mutate("evidence" = case_when(
     protein %in% known ~ "Known",
     .default = NA_character_
-  ))
+  )) |> 
+  mutate(
+    Position = str_extract(Index, "_S([:digit:]+)", group = 1),
+    Description = str_remove(Description, " \\[.+"),
+    type = "RxxS"
+    ) |> 
+  select(
+    "Gene" = gene,
+    "Protein" = protein,
+    Position,
+    Description,
+    "Window" = "window",
+    type
+    )
+
+# write_tsv(bind_rows(SP_proteins, Rxxs_proteins), "tabS4.tsv")
 
 leene_sites <- read_tsv(
   "data/published/leene_p_sites.tsv"
