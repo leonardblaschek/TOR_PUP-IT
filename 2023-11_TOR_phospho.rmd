@@ -757,12 +757,6 @@ complete <- FC |>
   select(-protein) |> 
   select("protein" = "uniprot", everything())
 
-leene_p_sites <- read_tsv("data/published/leene_p_sites.tsv") |> 
-  mutate(gene = str_extract(Protein, "^[:alnum:]+"))
-
-complete <- complete |> 
-  left_join(leene_p_sites, by = join_by(gene))
-
 write_tsv(complete, paste0(out_path, input, "_maxLFQ-", maxLFQ, "_hurdle-", hurdle, "_glMinProb-", global_MinProb, "_site_FC_annotated.tsv"))
 
 xlsx_export <- complete |>

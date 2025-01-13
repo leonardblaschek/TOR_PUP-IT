@@ -4389,13 +4389,16 @@ FC_phospho_scatter <- function(time_point) {
       y = "LogFC LST8-1 vs. GFP"
     ) +
     guides(fill = guide_legend(
-      title = "Overlap with Van Leene et al., 2019",
+      title = "Overlap Van Leene et al., 2019",
       title.position = "top"
     )) +
     theme_leo() +
     theme(
       axis.title = element_text(),
-      legend.position = "bottom"
+      legend.position = "inside",
+      legend.position.inside = c(1, 0), 
+      legend.justification.inside = c(1, 0),
+      legend.key.spacing.y = unit (-2, "mm")
     ) +
     coord_fixed(
       ylim = c(-6, 8),
@@ -4403,9 +4406,7 @@ FC_phospho_scatter <- function(time_point) {
     )
 }
 
-FC_phospho_scatter("4h") + FC_phospho_scatter("24h") +
-  plot_layout(guides = "collect") &
-  theme(legend.position = "bottom")
+FC_phospho_scatter("4h") + FC_phospho_scatter("24h")
 
 # ggsave(
 #   "phospho.pdf",
@@ -5186,7 +5187,7 @@ export <- new |>
   bind_rows(known_not_enriched |> select(protein) |> mutate(group = "Published and not enriched")) |>
   bind_rows(known_missing |> select(protein) |> mutate(group = "Published and not detected"))
 
-# write_tsv(export, "data/AP2/AP_candidates.tsv")
+write_tsv(export, "data/AP2/AP_candidates.tsv")
 ```
 
 
@@ -5216,9 +5217,19 @@ export_ap2 <- ap2_data |>
     "AlphaFold2 LIA with RAPTOR1" = LIA_Q93YQ1
   )
 
-candidate_results <- export |>
+candidate_results_full <- read_tsv("data/AP2/AP_candidates.tsv") |>
   full_join(ap2_data) |>
-  drop_na(Protein_1, group) |>
+  drop_na(Protein_1, group) |> 
+  mutate(
+    TORC_SU = case_match(
+      TORC_SU,
+      LST8[1] ~ LST8[2],
+      RAPTOR[1] ~ RAPTOR[2],
+      TOR[1] ~ TOR[2],
+    )
+  )
+
+candidate_results <- candidate_results_full |>
   group_by(protein, group) |>
   summarise(max_LIS = max(LIS))
 ```
@@ -5227,46 +5238,199 @@ candidate_results <- export |>
 
 ```{r}
 letters <- letter_groups(
-  candidate_results,
-  max_LIS,
+  candidate_results_full,
+  LIS,
   group,
   "kruskal"
 )
 
+data_hl <- candidate_results_full |> 
+  group_by(group) |> 
+  filter(LIS == max(LIS)) |> 
+  ungroup() |> 
+  mutate(symbol = c("PANK2", "RAPTOR1", "KIN11", "S40-7"))
+
 ap2_overview <- ggplot(
-  candidate_results,
-  aes(y = group, x = max_LIS, fill = group)
+  candidate_results_full,
+  aes(x = TORC_SU, y = LIS, fill = group)
 ) +
-  geom_density_ridges(
-    # stat = "binline",
-    # bins = 20,
-    adjust = 5,
-    colour = "white",
-    quantile_lines = TRUE,
-    quantiles = 2,
-    alpha = 1,
-    panel_scaling = FALSE
+  geom_violin(
+    adjust = 2,
+    colour = "black",
+    draw_quantiles = 0.5,
+    scale = "width"
+    ) +
+  geom_segment(
+    data = data_hl,
+    aes(
+      xend = after_stat(x) + 0.4
+      ),
+    lineend = "round"
+  ) +
+  geom_beeswarm(
+    shape = 21,
+    colour = "white"
+  ) +
+  geom_text(
+    data = data_hl,
+    aes(label = symbol),
+    family = "Helvetica",
+    size = ggtext_size,
+    hjust = 0,
+    nudge_x = 0.5
   ) +
   labs(
-    x = "Local interaction score (LIS)"
+    y = "Local interaction score (LIS)"
   ) +
   scale_fill_manual(values = c(
     pal_ostwald_disc[c(2, 1)],
     colorspace::desaturate(colorspace::lighten(pal_ostwald_disc[1], 0.8), 0.6),
     colorspace::desaturate(colorspace::lighten(pal_ostwald_disc[1], 0.8), 0.6)
   )) +
-  scale_x_continuous(labels = flat_zero) +
-  coord_cartesian(xlim = c(-0.005, NA), expand = FALSE) +
+  scale_y_continuous(labels = flat_zero) +
+  coord_cartesian(clip = "off") +
   theme_leo() +
   theme(
-    axis.title.x = element_markdown(),
+    axis.title.y = element_markdown(),
     legend.position = "none"
-  )
+  ) + 
+  theme(
+    panel.spacing = unit(5, "mm")
+  ) +
+  facet_wrap(~group, ncol = 4)
 
 ap2_overview
 ```
 
 # Revisions
+
+## Check whether disorder affects peptide abundance
+
+### Calculate peptide disorder
+
+```{r}
+asa_data <- read_tsv(
+  "data/output/alphafold_disorder_pred.tsv"
+) |>
+  filter(aa %in% c("K", "R")) |>
+  mutate(
+    protein = str_extract(name, "AF-([:alnum:]+)", group = 1)
+  ) |>
+  select(protein, pos, aa, rsa, "idr" = `disorder-25`)
+
+peptides <- read_tsv("data/peptides/FP/R0967.tsv") |>
+  filter(`Protein ID` %in% pull(asa_data, protein))
+
+peptides_n <- peptides |>
+  group_by(`Protein ID`) |>
+  tally()
+
+peptides_common <- peptides |>
+  filter(`Protein ID` %in% pull(
+    filter(
+      peptides_n, n > 10
+    ),
+    `Protein ID`
+  ))
+
+peptides_idr <- peptides_common |>
+  nest_join(asa_data, by = join_by(`Protein ID` == protein), name = "asa") |>
+  group_by(`Peptide Sequence`) |>
+  mutate(
+    asa_filtered = map(asa, \(x) filter(x, pos == (unique(Start) - 1) | pos == unique(End))),
+    mean_idr = unlist(map(asa_filtered, \(x) summarise(x, "mean_idr" = mean(idr))))
+  ) |>
+  group_by(`Protein ID`)
+
+peptides_idr_long <- peptides_idr |>
+  select(
+    "seq" = `Peptide Sequence`,
+    "protein" = `Protein ID`,
+    "disorder" = mean_idr,
+    ends_with("MaxLFQ Intensity")
+  ) |>
+  pivot_longer(
+    ends_with("MaxLFQ Intensity"),
+    names_to = "sample",
+    values_to = "intensity"
+  ) |>
+  filter(
+    intensity > 0
+  ) |>
+  mutate(
+    "log_intensity" = log(intensity),
+    "group" = str_remove(sample, "_[:digit:] MaxLFQ Intensity")
+  ) |>
+  group_by(protein, group) |>
+  mutate(
+    "rel_intensity" = (log_intensity - min(log_intensity, na.rm = T)) / (max(log_intensity, na.rm = T) - min(log_intensity, na.rm = T))
+    # "rel_intensity" = scale(log_intensity)
+  )
+```
+
+### Plot peptide disorder against quantity
+
+```{r}
+r_sq <- summary(lm(rel_intensity ~ disorder, data = peptides_idr_long))[["adj.r.squared"]]
+
+disorder_int_plot <- ggplot(
+  peptides_idr_long,
+  aes(x = disorder, y = rel_intensity)
+) +
+  geom_density_2d_filled(
+    contour_var = "count",
+    na.rm = TRUE,
+    contour = TRUE,
+    colour = "white",
+    linewidth = 0.2
+  ) +
+  geom_smooth(
+    method = "lm",
+    formula = "y ~ x",
+    na.rm = TRUE,
+    se = F,
+    linetype = 2,
+    linewidth = 0.4,
+    colour = "white"
+  ) +
+  annotate(
+    "richtext",
+    x = 0.75,
+    y = 1,
+    hjust = 1,
+    vjust = 1,
+    label = paste0("<i>R</i><sup>2</sup> = ", round(r_sq, digits = 3)),
+    family = "Helvetica",
+    size = ggtext_size,
+    colour = "white",
+    fill = NA,
+    label.size = NA
+  ) +
+  scale_fill_viridis_d(
+    option = "B",
+    guide = "none"
+  ) +
+  coord_cartesian(
+    expand = FALSE,
+    clip = "off"
+  ) +
+  labs(
+    x = "Cleavage site disorder",
+    y = "Relative peptide intensity"
+  ) +
+  theme_leo() +
+  theme(axis.title = element_markdown())
+
+disorder_int_plot
+
+ggsave(
+  "disorder_int.pdf",
+  width = onecol,
+  height = onecol * 0.6
+)
+```
+
+
 
 ## Quantify contribution of possible false-positives
 
@@ -5745,6 +5909,40 @@ suc_enrich_plot <- ggplot(
 suc_enrich_plot
 ```
 
+# Check phosphoproteins with SP/RxxS motifs
+
+```{r}
+known <- c(
+  leene_proteins,
+  persyn_proteins,
+  TORC_db$stringId_B
+) |>
+  unique()
+
+SP_proteins <- sig_sites |> 
+  filter(str_detect(window, "\\]P")) |> 
+  mutate("evidence" = case_when(
+    protein %in% known ~ "Known",
+    .default = NA_character_
+  ))
+
+Rxxs_proteins <- sig_sites |> 
+  filter(str_detect(window, "R..S\\[")) |> 
+  mutate("evidence" = case_when(
+    protein %in% known ~ "Known",
+    .default = NA_character_
+  ))
+
+leene_sites <- read_tsv(
+  "data/published/leene_p_sites.tsv"
+) |> 
+  mutate(
+    "gene" = str_remove(Protein, "\\.[:digit:]")
+  ) |> 
+  filter(gene %in% c(SP_proteins$gene, Rxxs_proteins$gene))
+```
+
+
 #### Mannitol
 
 ```{r}
@@ -5825,8 +6023,6 @@ man_enrich_plot
 
 ## Figure 1
 
-### 2024-10
-
 ```{r}
 set.seed(6235)
 
@@ -5836,9 +6032,6 @@ CDEF
 GGGH
 "
 fig2 <- list(
-  # raptor_comp_plot,
-  # plot_spacer(),
-  # azd_plot,
   const_volc(1) + guides(fill = "none"),
   const_volc(2) + guides(fill = "none"),
   ind_volc(1) + guides(fill = "none"),
@@ -5847,37 +6040,55 @@ fig2 <- list(
   ind_treat_scatter(2, "_24h") + guides(fill = "none"),
   comp_plot,
   const_volc(3) + guides(fill = "none")
-  # upset_baits
 )
-# G <- access_plot(detected, depth, top_depth)  + labs(y = "LYS distance from surface [Å]")
-# H <- access_plot(detected, rsa, top_depth) + labs(y = "LYS solvent acessibility")
-# I <- access_plot(detected, idr, top_depth) + labs(y = "LYS disorder")
-# J <- access_plot(det_en, idr, top_depth) +
-#   labs(y = "LYS disorder") +
-#   scale_x_discrete(labels = c("Enriched", "Detected but<br>not enriched"))
 
-# pdf("Figure2.pdf", width = twocol, height = twocol)
 
 wrap_plots(fig2, design = design) +
-  # wrap_elements(plot = upset_baits) +
   plot_annotation(tag_levels = list(LETTERS[2:9])) &
   theme(
-    # legend.position = "bottom",
     plot.tag = element_text(size = 10, face = "bold", family = "Helvetica")
   )
-# dev.off()
 
-ggsave(
-  "Figure1.pdf",
-  width = 180,
-  height = 150,
-  units = "mm"
-)
+# ggsave(
+#   "Figure1.pdf",
+#   width = 180,
+#   height = 150,
+#   units = "mm"
+# )
 ```
 
 ## Figure 2
 
-### 2024-10
+```{r}
+design <- "
+AABBCC
+AABBDD
+EEEEEE
+EEEEEE
+"
+
+FC_phospho_scatter("4h") +
+  FC_phospho_scatter("24h") + theme(legend.position = "none") +
+  SP_logo +
+  RS_logo +
+  ap2_overview +
+  plot_annotation(tag_levels = "A") +
+  plot_layout(
+    design = design
+  ) &
+  theme(
+    plot.tag = element_text(size = 10, face = "bold", family = "Helvetica")
+  )
+
+# ggsave(
+#   "Figure2.pdf",
+#   width = 180,
+#   height = 120,
+#   units = "mm"
+# )
+```
+
+## Figure 3
 
 ```{r}
 design <- "
@@ -5911,46 +6122,12 @@ wrap_elements(full = top) + c + d + e + f +
     plot.tag = element_text(size = 10, face = "bold", family = "Helvetica")
   )
 
-ggsave(
-  "Figure2.pdf",
-  width = 180,
-  height = 180,
-  units = "mm"
-)
-```
-
-## Figure 3
-
-### 2024-10
-
-```{r}
-design <- "
-AABBCC
-AABBDD
-EEEFFF
-EEEFFF
-"
-
-FC_phospho_scatter("4h") + theme(legend.position = "none") +
-  FC_phospho_scatter("24h") +
-  SP_logo +
-  RS_logo +
-  free(ap2_overview) +
-  plot_spacer() +
-  plot_annotation(tag_levels = "A") +
-  plot_layout(
-    design = design
-  ) &
-  theme(
-    plot.tag = element_text(size = 10, face = "bold", family = "Helvetica")
-  )
-
-ggsave(
-  "Figure3.pdf",
-  width = 180,
-  height = 100,
-  units = "mm"
-)
+# ggsave(
+#   "Figure3.pdf",
+#   width = 180,
+#   height = 180,
+#   units = "mm"
+# )
 ```
 
 # Supplementary figures
