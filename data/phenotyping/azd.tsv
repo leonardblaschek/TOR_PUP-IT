@@ -1,0 +1,175 @@
+treatment	time	length
+Control	−12 h	2.962
+Control	−12 h	4.543
+Control	−12 h	3.435
+Control	−12 h	3.364
+Control	−12 h	3.787
+Control	−12 h	3.789
+Control	−12 h	3.265
+Control	−12 h	3.038
+Control	−12 h	3.438
+Control	−12 h	4.127
+Control	−12 h	4.000
+Control	−12 h	3.991
+Control	−12 h	3.622
+Control	−12 h	2.562
+Control	−12 h	3.656
+Control	−12 h	3.323
+Control	−12 h	3.431
+Control	−12 h	3.858
+Control	−12 h	4.04
+Control	−12 h	3.483
+Control	−12 h	3.693
+Control	0 h	4.209
+Control	0 h	4.448
+Control	0 h	3.828
+Control	0 h	4.096
+Control	0 h	4.852
+Control	0 h	4.234
+Control	0 h	4.431
+Control	0 h	3.229
+Control	0 h	5.512
+Control	0 h	4.552
+Control	0 h	4.04
+Control	0 h	3.515
+Control	0 h	4.192
+Control	0 h	4.138
+Control	0 h	5.328
+Control	0 h	4.242
+Control	0 h	4.388
+Control	0 h	4.36
+Control	0 h	4.904
+Control	0 h	4.597
+Control	0 h	5.295
+Control	0 h	3.776
+Mannitol	24 h	5.634
+Mannitol	24 h	5.515
+Mannitol	24 h	4.048
+Mannitol	24 h	4.588
+Mannitol	24 h	4.826
+Mannitol	24 h	4.342
+Mannitol	24 h	4.055
+Mannitol	24 h	3.9
+Mannitol	24 h	3.718
+Mannitol	24 h	4.286
+Mannitol	24 h	4.321
+Mannitol	24 h	5.204
+Mannitol	24 h	5.674
+Mannitol	24 h	5.384
+Mannitol	24 h	5.03
+Mannitol	24 h	4.285
+Mannitol	24 h	5.202
+Mannitol	24 h	5.123
+Mannitol	24 h	4.651
+Mannitol	24 h	4.169
+Sucrose	24 h	5.913
+Sucrose	24 h	5.044
+Sucrose	24 h	6.069
+Sucrose	24 h	5.744
+Sucrose	24 h	5.516
+Sucrose	24 h	5.671
+Sucrose	24 h	6.467
+Sucrose	24 h	5.541
+Sucrose	24 h	6.911
+Sucrose	24 h	5.612
+Sucrose	24 h	5.296
+Sucrose	24 h	6.26
+Sucrose	24 h	5.659
+Sucrose	24 h	7.086
+Sucrose	24 h	7.384
+Sucrose	24 h	7.686
+Sucrose	24 h	4.704
+Sucrose	24 h	5.622
+Sucrose	24 h	6.133
+Sucrose	24 h	5.908
+Sucrose +<br>AZD	24 h	4.884
+Sucrose +<br>AZD	24 h	4.71
+Sucrose +<br>AZD	24 h	5.827
+Sucrose +<br>AZD	24 h	4.352
+Sucrose +<br>AZD	24 h	5.756
+Sucrose +<br>AZD	24 h	4.19
+Sucrose +<br>AZD	24 h	4.514
+Sucrose +<br>AZD	24 h	5.159
+Sucrose +<br>AZD	24 h	4.821
+Sucrose +<br>AZD	24 h	5.26
+Sucrose +<br>AZD	24 h	4.054
+Sucrose +<br>AZD	24 h	4.675
+Sucrose +<br>AZD	24 h	5.834
+Sucrose +<br>AZD	24 h	4.03
+Sucrose +<br>AZD	24 h	4.686
+Sucrose +<br>AZD	24 h	4.535
+Sucrose +<br>AZD	24 h	4.982
+Sucrose +<br>AZD	24 h	5.582
+Sucrose +<br>AZD	24 h	3.631
+Sucrose +<br>AZD	24 h	4.433
+Sucrose +<br>AZD	24 h	4.438
+Mannitol	72 h	4.919
+Mannitol	72 h	3.558
+Mannitol	72 h	4.325
+Mannitol	72 h	3.97
+Mannitol	72 h	4.571
+Mannitol	72 h	4.406
+Mannitol	72 h	4.492
+Mannitol	72 h	3.968
+Mannitol	72 h	4.815
+Mannitol	72 h	4.912
+Mannitol	72 h	5.787
+Mannitol	72 h	3.846
+Mannitol	72 h	5.508
+Mannitol	72 h	5.935
+Mannitol	72 h	5.031
+Mannitol	72 h	4.427
+Mannitol	72 h	3.942
+Mannitol	72 h	4.732
+Mannitol	72 h	4.196
+Mannitol	72 h	4.589
+Mannitol	72 h	5.491
+Mannitol	72 h	6.091
+Mannitol	72 h	5.381
+Sucrose	72 h	7.126
+Sucrose	72 h	6.834
+Sucrose	72 h	6.482
+Sucrose	72 h	8.24
+Sucrose	72 h	6.519
+Sucrose	72 h	7.455
+Sucrose	72 h	8.255
+Sucrose	72 h	6.727
+Sucrose	72 h	7.99
+Sucrose	72 h	6.358
+Sucrose	72 h	6.173
+Sucrose	72 h	7.681
+Sucrose	72 h	5.788
+Sucrose	72 h	8.444
+Sucrose	72 h	6.39
+Sucrose	72 h	7.77
+Sucrose	72 h	7.762
+Sucrose	72 h	8.352
+Sucrose	72 h	8.399
+Sucrose	72 h	7.114
+Sucrose	72 h	7.983
+Sucrose +<br>AZD	72 h	5.953
+Sucrose +<br>AZD	72 h	4.066
+Sucrose +<br>AZD	72 h	5.051
+Sucrose +<br>AZD	72 h	5.947
+Sucrose +<br>AZD	72 h	5.18
+Sucrose +<br>AZD	72 h	5.803
+Sucrose +<br>AZD	72 h	6.88
+Sucrose +<br>AZD	72 h	5.503
+Sucrose +<br>AZD	72 h	6.609
+Sucrose +<br>AZD	72 h	6.515
+Sucrose +<br>AZD	72 h	5.303
+Sucrose +<br>AZD	72 h	6.71
+Sucrose +<br>AZD	72 h	5.519
+Sucrose +<br>AZD	72 h	6.08
+Sucrose +<br>AZD	72 h	5.162
+Sucrose +<br>AZD	72 h	4.761
+Sucrose +<br>AZD	72 h	5.731
+Sucrose +<br>AZD	72 h	5.376
+Sucrose +<br>AZD	72 h	5.893
+Sucrose +<br>AZD	72 h	5.31
+Sucrose +<br>AZD	72 h	4.832
+Sucrose +<br>AZD	72 h	5.818
+Sucrose +<br>AZD	72 h	5.165
+Sucrose +<br>AZD	72 h	5.372
+Sucrose +<br>AZD	72 h	4.95
+Sucrose +<br>AZD	72 h	5.466
