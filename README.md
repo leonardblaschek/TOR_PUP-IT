@@ -4,6 +4,8 @@
 
 Code and source data to recreate analyses performed in Zheng, Blaschek & Pottier et al. (2025). *Advanced Science.* DOI: [10.1002/advs.202414496](https://doi.org/10.1002/advs.202414496).
 
+**Update 2026-02:** Since the journal has, after two lengthy attempts, still not managed to sort out the availability of all supplementary material, the **full, formatted and usable PUP-IT database (supplementary data file 3) is now available [here](Supplementary_data_3.xlsx).**
+
 Note that `2023-11_TOR_PPIN_vis.rmd` depends on the output of `2023-11_TOR_PPIN_vis.rmd` and `2023-11_TOR_phospho.rmd`.
 `2024-01_manuscript_figures.rmd` depends on the output of all other scripts. However, intermediate output files are included in the repository, so each script should execute by itself. `/data/output/FP_maxLFQ-TRUE_hurdle-FALSE_glMinProb-TRUE_PPI_FC_annotated.tar.gz` (compressed to abide by Github's size limits) needs to be extracted before running any scripts depending on it.
 
